@@ -97,7 +97,7 @@ fn handle_get_request(
         file_path.push(filename);
 
         // Try to open the file
-        match File::open(file_path) {
+        match File::open(&file_path) {
             Ok(mut file) => {
                 // Get file metadata to determine Content-Length
                 let metadata = file.metadata()?;
