@@ -1,5 +1,4 @@
 use std::{
-    error::request_value,
     io::{self, BufRead, Write},
     net::{TcpListener, TcpStream},
     thread,
