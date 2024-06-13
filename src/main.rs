@@ -1,15 +1,30 @@
 use std::{
+    env,
+    fs::File,
     io::{self, BufRead, Write},
     net::{TcpListener, TcpStream},
+    path::PathBuf,
     thread,
 };
 
 const ADDRESS: &str = "localhost:4221";
-const RESPONSE_200: &str = "HTTP/1.1 200 OK\r\n\r\n";
+const RESPONSE_200: &str = "HTTP/1.1 200 OK\r\n";
 const RESPONSE_404: &str = "HTTP/1.1 404 Not Found\r\n\r\n";
-const RESPONSE_405: &str = "HTTP/1.1 405 Method Not Allowed\r\n\r\n";
+const CONTENT_TYPE_BINARY: &str = "Content-Type: application/octet-stream\r\n";
+const CONTENT_LENGTH: &str = "Content-Length: ";
 
 fn main() -> io::Result<()> {
+    // Parse command-line arguments
+    let mut args = env::args();
+    args.next(); // Skip the first argument (program name)
+    let directory = match args.next() {
+        Some(dir) => dir,
+        None => {
+            eprintln!("Usage: ./your_server.sh --directory <directory>");
+            return Ok(());
+        }
+    };
+
     // Bind the server to the address
     let listener = TcpListener::bind(ADDRESS)?;
     println!("Server listening on http://{}", ADDRESS);
@@ -18,8 +33,8 @@ fn main() -> io::Result<()> {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                thread::spawn(|| {
-                    if let Err(e) = handle_connection(stream) {
+                thread::spawn(move || {
+                    if let Err(e) = handle_connection(stream, &directory) {
                         eprintln!("Failed to handle connection: {}", e);
                     }
                 });
@@ -31,7 +46,7 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
+fn handle_connection(mut stream: TcpStream, directory: &str) -> io::Result<()> {
     // Read the first line of the request
     let mut reader = io::BufReader::new(&stream);
     let mut request_line = String::new();
@@ -62,44 +77,59 @@ fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
 
     // Handle the request based on the method and path
     match method {
-        "GET" => handle_get_request(&mut stream, path, &headers),
-        _ => send_response(&mut stream, RESPONSE_405),
+        "GET" => handle_get_request(&mut stream, path, directory, &headers),
+        _ => send_response(&mut stream, RESPONSE_404),
     }
 }
 
-fn handle_get_request(stream: &mut TcpStream, path: &str, headers: &str) -> io::Result<()> {
-    match path {
-        "/" => send_response(stream, RESPONSE_200),
-        p if p.starts_with("/echo/") => handle_echo_request(stream, &p[6..]),
-        "/user-agent" => handle_user_agent_request(stream, headers),
-        _ => send_response(stream, RESPONSE_404),
+fn handle_get_request(
+    stream: &mut TcpStream,
+    path: &str,
+    directory: &str,
+    _headers: &str,
+) -> io::Result<()> {
+    if path.starts_with("/files/") {
+        let filename = &path[7..]; // Trim "/files/"
+
+        // Construct the full path to the requested file
+        let mut file_path = PathBuf::from(directory);
+        file_path.push(filename);
+
+        // Try to open the file
+        match File::open(file_path) {
+            Ok(mut file) => {
+                // Get file metadata to determine Content-Length
+                let metadata = file.metadata()?;
+                let file_size = metadata.len();
+
+                // Prepare the response headers
+                let mut response_headers = String::new();
+                response_headers.push_str(RESPONSE_200);
+                response_headers.push_str(CONTENT_TYPE_BINARY);
+                response_headers.push_str(&format!("{}{}\r\n\r\n", CONTENT_LENGTH, file_size));
+
+                // Send headers
+                send_response(stream, &response_headers)?;
+
+                // Send file content
+                let mut buffer = vec![0; 1024];
+                loop {
+                    let bytes_read = file.read(&mut buffer)?;
+                    if bytes_read == 0 {
+                        break;
+                    }
+                    stream.write_all(&buffer[..bytes_read])?;
+                }
+            }
+            Err(_) => {
+                send_response(stream, RESPONSE_404)?;
+            }
+        }
+    } else {
+        send_response(stream, RESPONSE_404)?;
     }
-}
 
-fn handle_echo_request(stream: &mut TcpStream, echo_string: &str) -> io::Result<()> {
-    let response_body = echo_string;
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
-        response_body.len(),
-        response_body
-    );
-    send_response(stream, &response)
-}
-
-fn handle_user_agent_request(stream: &mut TcpStream, headers: &str) -> io::Result<()> {
-    // Extract the User-Agent header
-    let user_agent = headers
-        .lines()
-        .find(|line| line.to_lowercase().starts_with("user-agent:"))
-        .and_then(|line| line.splitn(2, ": ").nth(1))
-        .unwrap_or_default();
-
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
-        user_agent.len(),
-        user_agent
-    );
-    send_response(stream, &response)
+    Ok(())
 }
 
 fn send_response(stream: &mut TcpStream, response: &str) -> io::Result<()> {
