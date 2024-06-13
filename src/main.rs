@@ -84,7 +84,7 @@ fn handle_request(
     method: &str,
     path: &str,
     directory: &str,
-    headers: &str,
+    _headers: &str,
 ) -> io::Result<()> {
     match method {
         "GET" => handle_get_request(stream, path, directory),
