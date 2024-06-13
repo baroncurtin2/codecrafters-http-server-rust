@@ -45,14 +45,35 @@ fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
     let path = parts[1];
     let _version = parts[2];
 
-    let response = match path {
-        "/" => "HTTP/1.1 200 OK\r\n\r\n",
-        _ => "HTTP/1.1 404 Not Found\r\n\r\n",
-    };
+    match method {
+        "GET" => handle_get_request(&mut stream, path),
+        _ => send_response(&mut stream, "HTTP/1.1 405 Method Not Allowed\r\n\r\n"),
+    }
+}
 
-    // Write the response to the stream
+fn handle_get_request(stream: &mut TcpStream, path: &str) -> io::Result<()> {
+    if path.starts_with("/echo/") {
+        handle_echo_request(stream, &path[6..])
+    } else if path == "/" {
+        send_response(stream, "HTTP/1.1 200 OK\r\n\r\n")
+    } else {
+        send_response(stream, "HTTP/1.1 404 Not Found\r\n\r\n")
+    }
+}
+
+fn handle_echo_request(stream: &mut TcpStream, echo_string: &str) -> io::Result<()> {
+    let response_body = echo_string;
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+        response_body.len(),
+        response_body
+    );
+
+    send_response(stream, &response)
+}
+
+fn send_response(stream: &mut TcpStream, response: &str) -> io::Result<()> {
     stream.write_all(response.as_bytes())?;
     stream.flush()?;
-
     Ok(())
 }
