@@ -1,10 +1,11 @@
-use std::{
-    collections::HashMap,
-    fs::File,
-    io::{self, BufRead, BufReader, Read, Write},
-    net::{TcpListener, TcpStream},
-    path::Path,
-};
+use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::net::{TcpListener, TcpStream};
+use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 
 const CRLF: &str = "\r\n";
 const HTTP_STATUS_OK: &str = "HTTP/1.1 200 OK";
@@ -20,147 +21,111 @@ const LOG_PREFIX: &str = "[SERVER] ";
 const DEFAULT_DIRECTORY: &str = ".";
 const SERVER_ADDRESS: &str = "localhost:4221";
 
-fn main() -> io::Result<()> {
-    let mut file_directory = DEFAULT_DIRECTORY.to_string();
-
-    // Parse command-line arguments
-    let mut args = std::env::args().skip(1);
-    if let Some(directory) = args.next() {
-        file_directory = directory;
-    }
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let file_directory = if args.len() > 1 {
+        &args[1]
+    } else {
+        DEFAULT_DIRECTORY
+    };
 
     println!("{}Starting server...", LOG_PREFIX);
 
-    // Bind the server to the address
-    let listener = TcpListener::bind(SERVER_ADDRESS)?;
+    let listener = TcpListener::bind(SERVER_ADDRESS).expect("Failed to bind to port 4221");
+
     println!("{}Listening on {}", LOG_PREFIX, SERVER_ADDRESS);
 
-    // Accept connections and spawn a new thread for each one
+    handle_graceful_shutdown(
+        listener.try_clone().expect("Failed to clone listener"),
+        listener,
+    );
+
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let file_directory = file_directory.clone();
                 thread::spawn(move || {
-                    if let Err(e) = handle_connection(stream, &file_directory) {
-                        eprintln!("Failed to handle connection: {}", e);
-                    }
+                    handle_connection(stream, file_directory);
                 });
             }
-            Err(e) => eprintln!("Connection failed: {}", e),
+            Err(e) => {
+                eprintln!("{}Error accepting connection: {}", LOG_PREFIX, e);
+            }
         }
     }
-
-    Ok(())
 }
 
-fn handle_connection(stream: TcpStream, file_directory: &str) -> io::Result<()> {
-    // Read the request
+fn handle_graceful_shutdown(listener1: TcpListener, listener2: TcpListener) {
+    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+    let thread_listener1 = listener1
+        .try_clone()
+        .expect("Failed to clone listener for shutdown");
+
+    thread::spawn(move || {
+        if let Ok(_) = shutdown_rx.recv() {
+            println!("{}Shutting down server...", LOG_PREFIX);
+            drop(thread_listener1);
+            drop(listener2);
+        }
+    });
+
+    ctrlc::set_handler(move || {
+        if let Err(_) = shutdown_tx.send(()) {
+            eprintln!("{}Error sending shutdown signal", LOG_PREFIX);
+        }
+    })
+    .expect("Error setting Ctrl-C handler");
+}
+
+fn handle_connection(mut stream: TcpStream, file_directory: &str) {
     let mut reader = BufReader::new(&stream);
     let mut request_line = String::new();
-    reader.read_line(&mut request_line)?;
 
-    // Parse the request line
-    let mut parts = request_line.trim().split_whitespace();
-    let method = parts.next().unwrap_or("");
-    let path = parts.next().unwrap_or("");
-
-    // Read headers
-    let mut headers = HashMap::new();
-    loop {
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        if line == "\r\n" || line == "" {
-            break;
-        }
-        let parts: Vec<&str> = line.splitn(2, ": ").collect();
-        if parts.len() == 2 {
-            headers.insert(parts[0].to_string(), parts[1].trim().to_string());
-        }
+    if reader.read_line(&mut request_line).is_err() {
+        eprintln!("{}Error reading request", LOG_PREFIX);
+        return;
     }
+
+    let request_parts: Vec<&str> = request_line.split_whitespace().collect();
+    if request_parts.len() < 3 {
+        eprintln!("{}Invalid request", LOG_PREFIX);
+        return;
+    }
+
+    let method = request_parts[0];
+    let path = request_parts[1];
+    let _http_version = request_parts[2];
+
+    println!("{}Request: {} {}", LOG_PREFIX, method, path);
 
     match method {
-        "GET" => handle_get_request(stream, path, file_directory, &headers),
-        "POST" => handle_post_request(stream, path, file_directory, &headers, reader),
-        _ => send_response(stream, HTTP_STATUS_NOT_FOUND, &HashMap::new(), ""),
+        "GET" => handle_get_request(stream, path, file_directory),
+        "POST" => handle_post_request(&mut stream, path, file_directory, &mut reader),
+        _ => send_response(&mut stream, HTTP_STATUS_NOT_FOUND, &HashMap::new(), ""),
     }
+    .unwrap_or_else(|err| eprintln!("{}Error handling request: {}", LOG_PREFIX, err));
 }
 
-fn handle_get_request(
-    stream: TcpStream,
-    path: &str,
-    file_directory: &str,
-    headers: &HashMap<String, String>,
-) -> io::Result<()> {
+fn handle_get_request(mut stream: TcpStream, path: &str, file_directory: &str) -> io::Result<()> {
     match path {
-        "/" => send_response(stream, HTTP_STATUS_OK, &HashMap::new(), ""),
+        "/" => send_response(&mut stream, HTTP_STATUS_OK, &HashMap::new(), ""),
         _ if path.starts_with("/echo/") => {
             let echo_string = &path[6..];
-            handle_echo_request(stream, echo_string, headers)
+            handle_echo_request(&mut stream, echo_string)
         }
-        "/user-agent" => handle_user_agent_request(stream, headers),
+        "/user-agent" => handle_user_agent_request(&mut stream),
         _ if path.starts_with("/files/") => {
             let filename = &path[7..];
-            handle_file_request(stream, file_directory, filename)
+            handle_file_request(&mut stream, file_directory, filename)
         }
-        _ => send_response(stream, HTTP_STATUS_NOT_FOUND, &HashMap::new(), ""),
-    }
-}
-
-fn handle_echo_request(
-    stream: TcpStream,
-    echo_string: &str,
-    headers: &HashMap<String, String>,
-) -> io::Result<()> {
-    let content_type = CONTENT_TYPE_TEXT_PLAIN.to_string();
-    let content_length = echo_string.len();
-    let headers = create_headers(&content_type, content_length, headers, false)?;
-
-    send_response(stream, HTTP_STATUS_OK, &headers, echo_string)
-}
-
-fn handle_user_agent_request(
-    stream: TcpStream,
-    headers: &HashMap<String, String>,
-) -> io::Result<()> {
-    let user_agent = headers
-        .get("User-Agent")
-        .unwrap_or(&"".to_string())
-        .to_string();
-    let content_type = CONTENT_TYPE_TEXT_PLAIN.to_string();
-    let content_length = user_agent.len();
-    let headers = create_headers(&content_type, content_length, headers, false)?;
-
-    send_response(stream, HTTP_STATUS_OK, &headers, &user_agent)
-}
-
-fn handle_file_request(stream: TcpStream, file_directory: &str, filename: &str) -> io::Result<()> {
-    let file_path = Path::new(file_directory).join(filename);
-    match File::open(&file_path) {
-        Ok(mut file) => {
-            let mut file_data = Vec::new();
-            file.read_to_end(&mut file_data)?;
-
-            let content_type = CONTENT_TYPE_OCTET_STREAM.to_string();
-            let content_length = file_data.len();
-            let headers = create_headers(&content_type, content_length, &HashMap::new(), true)?;
-
-            send_response(
-                stream,
-                HTTP_STATUS_OK,
-                &headers,
-                &String::from_utf8_lossy(&file_data),
-            )
-        }
-        Err(_) => send_response(stream, HTTP_STATUS_NOT_FOUND, &HashMap::new(), ""),
+        _ => send_response(&mut stream, HTTP_STATUS_NOT_FOUND, &HashMap::new(), ""),
     }
 }
 
 fn handle_post_request(
-    mut stream: TcpStream,
+    stream: &mut TcpStream,
     path: &str,
     file_directory: &str,
-    headers: &HashMap<String, String>,
-    reader: BufReader<&TcpStream>,
+    reader: &mut BufReader<&TcpStream>,
 ) -> io::Result<()> {
     let content_length = headers
         .get(CONTENT_LENGTH_HEADER)
@@ -175,34 +140,63 @@ fn handle_post_request(
 
     file.write_all(&body)?;
 
-    send_response(&mut stream, HTTP_STATUS_CREATED, &HashMap::new(), "")
+    send_response(stream, HTTP_STATUS_CREATED, &HashMap::new(), "")
+}
+
+fn handle_echo_request(stream: &mut TcpStream, echo_string: &str) -> io::Result<()> {
+    let content_type = CONTENT_TYPE_TEXT_PLAIN.to_string();
+    let content_length = echo_string.len();
+    let headers = create_headers(&content_type, content_length)?;
+
+    send_response(stream, HTTP_STATUS_OK, &headers, echo_string)
+}
+
+fn handle_user_agent_request(stream: &mut TcpStream) -> io::Result<()> {
+    let user_agent = format!("{}", stream.peer_addr()?.ip());
+    let content_type = CONTENT_TYPE_TEXT_PLAIN.to_string();
+    let content_length = user_agent.len();
+    let headers = create_headers(&content_type, content_length)?;
+
+    send_response(stream, HTTP_STATUS_OK, &headers, &user_agent)
+}
+
+fn handle_file_request(
+    stream: &mut TcpStream,
+    file_directory: &str,
+    filename: &str,
+) -> io::Result<()> {
+    let file_path = Path::new(file_directory).join(filename);
+    match File::open(&file_path) {
+        Ok(mut file) => {
+            let mut file_data = Vec::new();
+            file.read_to_end(&mut file_data)?;
+
+            let content_type = CONTENT_TYPE_OCTET_STREAM.to_string();
+            let content_length = file_data.len();
+            let headers = create_headers(&content_type, content_length)?;
+
+            send_response(
+                stream,
+                HTTP_STATUS_OK,
+                &headers,
+                &String::from_utf8_lossy(&file_data),
+            )
+        }
+        Err(_) => send_response(stream, HTTP_STATUS_NOT_FOUND, &HashMap::new(), ""),
+    }
 }
 
 fn create_headers(
     content_type: &str,
     content_length: usize,
-    headers: &HashMap<String, String>,
-    gzip: bool,
 ) -> io::Result<HashMap<String, String>> {
-    let mut new_headers = HashMap::new();
-    new_headers.insert(CONTENT_TYPE_HEADER.to_string(), content_type.to_string());
-    new_headers.insert(
+    let mut headers = HashMap::new();
+    headers.insert(CONTENT_TYPE_HEADER.to_string(), content_type.to_string());
+    headers.insert(
         CONTENT_LENGTH_HEADER.to_string(),
         content_length.to_string(),
     );
-
-    if gzip {
-        new_headers.insert(
-            CONTENT_ENCODING_HEADER.to_string(),
-            CONTENT_ENCODING_GZIP.to_string(),
-        );
-    }
-
-    for (key, value) in headers.iter() {
-        new_headers.insert(key.clone(), value.clone());
-    }
-
-    Ok(new_headers)
+    Ok(headers)
 }
 
 fn send_response(
@@ -211,16 +205,13 @@ fn send_response(
     headers: &HashMap<String, String>,
     body: &str,
 ) -> io::Result<()> {
-    let mut response = format!("{}\r\n", status);
-
+    let mut response = format!("{}{}", status, CRLF);
     for (key, value) in headers.iter() {
-        response += &format!("{}: {}\r\n", key, value);
+        response.push_str(&format!("{}: {}{}", key, value, CRLF));
     }
-
-    response += "\r\n";
-    response += body;
+    response.push_str(CRLF);
+    response.push_str(body);
 
     stream.write_all(response.as_bytes())?;
-
-    Ok(())
+    stream.flush()
 }
