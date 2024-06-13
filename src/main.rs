@@ -1,13 +1,13 @@
 use std::{
-    io::{self, BufRead, BufReader, Write},
+    io::{self, BufRead, Read, Write},
     net::{TcpListener, TcpStream},
     thread,
 };
 
 fn main() -> io::Result<()> {
     // Bind the server to the address
-    let listener = TcpListener::bind("127.0.0.1:4221")?;
-    println!("Server listening on http://127.0.0.1:4221");
+    let listener = TcpListener::bind("localhost:4221")?;
+    println!("Server listening on http://localhost:4221");
 
     // Accept connections and spawn a new thread for each one
     for stream in listener.incoming() {
@@ -27,12 +27,12 @@ fn main() -> io::Result<()> {
 }
 
 fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
-    // Read the request
-    let mut reader = BufReader::new(&stream);
+    // read the first line of the request
+    let mut reader = io::BufReader::new(&stream);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
 
-    // Parse the request line
+    // parse the request line
     let parts: Vec<&str> = request_line.trim_end().split_whitespace().collect();
     if parts.len() < 3 {
         return Err(io::Error::new(
@@ -40,14 +40,14 @@ fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
             "Invalid HTTP request line",
         ));
     }
+
     let method = parts[0];
     let path = parts[1];
 
-    // Read headers
+    // read headers
     let mut headers = String::new();
     reader.read_to_string(&mut headers)?;
 
-    // Handle the request based on the path
     match method {
         "GET" => handle_get_request(&mut stream, path, &headers),
         _ => send_response(&mut stream, "HTTP/1.1 405 Method Not Allowed\r\n\r\n"),
@@ -73,11 +73,12 @@ fn handle_echo_request(stream: &mut TcpStream, echo_string: &str) -> io::Result<
         response_body.len(),
         response_body
     );
+
     send_response(stream, &response)
 }
 
 fn handle_user_agent_request(stream: &mut TcpStream, headers: &str) -> io::Result<()> {
-    // Extract the User-Agent header
+    // extract the user-agent header
     let user_agent = headers
         .lines()
         .find(|line| line.to_lowercase().starts_with("user-agent:"))
@@ -89,6 +90,7 @@ fn handle_user_agent_request(stream: &mut TcpStream, headers: &str) -> io::Resul
         user_agent.len(),
         user_agent
     );
+
     send_response(stream, &response)
 }
 
