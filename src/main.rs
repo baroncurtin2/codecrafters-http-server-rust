@@ -132,6 +132,7 @@ fn handle_get_request(stream: &mut TcpStream, path: &str) -> io::Result<()> {
 
 fn send_response(stream: &mut TcpStream, response: &str) -> io::Result<()> {
     stream.write_all(response.as_bytes())?;
+    stream.write_all(b"\r\n")?; // Add CRLF after headers
     stream.flush()?;
     Ok(())
 }
