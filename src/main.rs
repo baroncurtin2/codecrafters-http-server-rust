@@ -1,5 +1,5 @@
 use std::{
-    io::{self, BufRead, Write},
+    io::{self, BufRead, Read, Write},
     net::{TcpListener, TcpStream},
     thread,
 };
@@ -43,7 +43,10 @@ fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
 
     let method = parts[0];
     let path = parts[1];
-    let _version = parts[2];
+
+    // read headers
+    let mut headers = String::new();
+    reader.read_to_string(&mut headers)?;
 
     match method {
         "GET" => handle_get_request(&mut stream, path),
@@ -56,6 +59,8 @@ fn handle_get_request(stream: &mut TcpStream, path: &str) -> io::Result<()> {
         handle_echo_request(stream, &path[6..])
     } else if path == "/" {
         send_response(stream, "HTTP/1.1 200 OK\r\n\r\n")
+    } else if path == "/user-agent" {
+        handle_user_agent_request(stream, headers)
     } else {
         send_response(stream, "HTTP/1.1 404 Not Found\r\n\r\n")
     }
@@ -67,6 +72,23 @@ fn handle_echo_request(stream: &mut TcpStream, echo_string: &str) -> io::Result<
         "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
         response_body.len(),
         response_body
+    );
+
+    send_response(stream, &response)
+}
+
+fn handle_user_agent_request(stream: &mut TcpStream, headers: &str) -> io::Result<()> {
+    // extract the user-agent header
+    let user_agent = headers
+        .lines()
+        .find(|line| line.to_lowercase().starts_with("user-agent:"))
+        .map(|line| line.splitn(2, ": ").nth(1).unwrap_or("").to_string())
+        .unwrap_or_default();
+
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
+        user_agent.len(),
+        user_agent
     );
 
     send_response(stream, &response)
