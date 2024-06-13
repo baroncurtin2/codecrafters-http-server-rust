@@ -33,8 +33,9 @@ fn main() -> io::Result<()> {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
+                let directory_clone = directory.clone();
                 thread::spawn(move || {
-                    if let Err(e) = handle_connection(stream, &directory) {
+                    if let Err(e) = handle_connection(stream, &directory_clone) {
                         eprintln!("Failed to handle connection: {}", e);
                     }
                 });
