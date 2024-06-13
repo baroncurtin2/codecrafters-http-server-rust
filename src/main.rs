@@ -1,41 +1,39 @@
 use std::{
-    env,
     fs::File,
-    io::{self, BufRead, BufReader, Read, Write},
+    io::{self, BufRead, Read, Write},
     net::{TcpListener, TcpStream},
-    path::PathBuf,
+    path::{Path, PathBuf},
     thread,
 };
 
-const ADDRESS: &str = "localhost:4221";
-const RESPONSE_200: &str = "HTTP/1.1 200 OK\r\n";
-const RESPONSE_404: &str = "HTTP/1.1 404 Not Found\r\n\r\n";
-const CONTENT_TYPE_BINARY: &str = "Content-Type: application/octet-stream\r\n";
-const CONTENT_LENGTH: &str = "Content-Length: ";
+// Constants for HTTP responses
+const HTTP_OK: &str = "HTTP/1.1 200 OK\r\n";
+const HTTP_NOT_FOUND: &str = "HTTP/1.1 404 Not Found\r\n";
+const HTTP_METHOD_NOT_ALLOWED: &str = "HTTP/1.1 405 Method Not Allowed\r\n";
+const CONTENT_TYPE_OCTET_STREAM: &str = "Content-Type: application/octet-stream\r\n";
 
 fn main() -> io::Result<()> {
     // Parse command-line arguments
-    let mut args = env::args();
-    args.next(); // Skip the first argument (program name)
+    let mut args = std::env::args().skip(1);
     let directory = match args.next() {
         Some(dir) => dir,
         None => {
-            eprintln!("Usage: ./your_server.sh --directory <directory>");
+            eprintln!("Missing directory argument");
             return Ok(());
         }
     };
 
     // Bind the server to the address
-    let listener = TcpListener::bind(ADDRESS)?;
-    println!("Server listening on http://{}", ADDRESS);
+    let listener = TcpListener::bind("localhost:4221")?;
+    println!("Server listening on http://localhost:4221");
 
     // Accept connections and spawn a new thread for each one
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                let directory_clone = directory.clone();
+                let directory = directory.clone(); // Clone for each thread
                 thread::spawn(move || {
-                    if let Err(e) = handle_connection(stream, &directory_clone) {
+                    if let Err(e) = handle_connection(stream, &directory) {
                         eprintln!("Failed to handle connection: {}", e);
                     }
                 });
@@ -48,7 +46,7 @@ fn main() -> io::Result<()> {
 }
 
 fn handle_connection(mut stream: TcpStream, directory: &str) -> io::Result<()> {
-    // Read the first line of the request
+    // Read the request line
     let mut reader = io::BufReader::new(&stream);
     let mut request_line = String::new();
     reader.read_line(&mut request_line)?;
@@ -73,22 +71,28 @@ fn handle_connection(mut stream: TcpStream, directory: &str) -> io::Result<()> {
         if line == "\r\n" {
             break;
         }
-        headers.push_str(&line);
+        headers.push_str(&line)
     }
 
-    // Handle the request based on the method and path
+    handle_request(&mut stream, method, path, directory, &headers)?;
+
+    Ok(())
+}
+
+fn handle_request(
+    stream: &mut TcpStream,
+    method: &str,
+    path: &str,
+    directory: &str,
+    headers: &str,
+) -> io::Result<()> {
     match method {
-        "GET" => handle_get_request(&mut stream, path, directory, &headers),
-        _ => send_response(&mut stream, RESPONSE_404),
+        "GET" => handle_get_request(stream, path, directory),
+        _ => send_response(stream, HTTP_METHOD_NOT_ALLOWED),
     }
 }
 
-fn handle_get_request(
-    stream: &mut TcpStream,
-    path: &str,
-    directory: &str,
-    _headers: &str,
-) -> io::Result<()> {
+fn handle_get_request(stream: &mut TcpStream, path: &str, directory: &str) -> io::Result<()> {
     if path.starts_with("/files/") {
         let filename = &path[7..]; // Trim "/files/"
 
@@ -101,18 +105,18 @@ fn handle_get_request(
             Ok(mut file) => {
                 // Get file metadata to determine Content-Length
                 let metadata = file.metadata()?;
-                let file_size = metadata.len();
+                let file_size = metadata.len() as usize; // Convert to usize for Content-Length
 
                 // Prepare the response headers
-                let mut response_headers = String::new();
-                response_headers.push_str(RESPONSE_200);
-                response_headers.push_str(CONTENT_TYPE_BINARY);
-                response_headers.push_str(&format!("{}{}\r\n\r\n", CONTENT_LENGTH, file_size));
+                let response_headers = format!(
+                    "{}{}Content-Length: {}\r\n\r\n",
+                    HTTP_OK, CONTENT_TYPE_OCTET_STREAM, file_size
+                );
 
                 // Send headers
-                send_response(stream, &response_headers)?;
+                stream.write_all(response_headers.as_bytes())?;
 
-                // Send file content
+                // Send file content in chunks to avoid large memory allocations
                 let mut buffer = vec![0; 1024];
                 loop {
                     let bytes_read = file.read(&mut buffer)?;
@@ -122,13 +126,12 @@ fn handle_get_request(
                     stream.write_all(&buffer[..bytes_read])?;
                 }
             }
-            Err(e) => {
-                eprintln!("Error opening file: {}", e);
-                send_response(stream, RESPONSE_404)?;
+            Err(_) => {
+                send_response(stream, HTTP_NOT_FOUND)?;
             }
         }
     } else {
-        send_response(stream, RESPONSE_200)?;
+        send_response(stream, HTTP_NOT_FOUND)?;
     }
 
     Ok(())
