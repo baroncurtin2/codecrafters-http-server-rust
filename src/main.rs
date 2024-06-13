@@ -46,7 +46,14 @@ fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
 
     // read headers
     let mut headers = String::new();
-    reader.read_to_string(&mut headers)?;
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line)?;
+        if line == "\r\n" {
+            break;
+        }
+        headers.push_str(&line)
+    }
 
     match method {
         "GET" => handle_get_request(&mut stream, path, &headers),
