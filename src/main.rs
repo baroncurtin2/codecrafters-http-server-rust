@@ -123,7 +123,7 @@ fn handle_get_request(
                 }
             }
             Err(e) => {
-                eprintln!("Error opening file: {}".e);
+                eprintln!("Error opening file: {}", e);
                 send_response(stream, RESPONSE_404)?;
             }
         }
