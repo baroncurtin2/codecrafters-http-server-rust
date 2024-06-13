@@ -1,6 +1,6 @@
 use std::{
     fs::File,
-    io::{self, BufRead, BufReader, Read, Write},
+    io::{self, Read, Write},
     net::{TcpListener, TcpStream},
     path::PathBuf,
     thread,
@@ -103,33 +103,25 @@ fn handle_get_request(stream: &mut TcpStream, path: &str) -> io::Result<()> {
     };
 
     let file_path = format!("{}{}", files_directory, path);
+    let full_path = PathBuf::from(&file_path);
 
-    let response = if path.starts_with("/files/") {
-        let filename = &path[7..]; // Strip "/files/" prefix
-        let full_path = PathBuf::from(&file_path);
+    if full_path.is_file() {
+        let mut file = File::open(&full_path)?;
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents)?;
 
-        if let Ok(file) = File::open(&full_path) {
-            let metadata = file.metadata()?;
-            let content_length = metadata.len();
+        let content_length = contents.len();
+        let response = format!(
+            "{}Content-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n{}",
+            RESPONSE_200,
+            content_length,
+            String::from_utf8_lossy(&contents)
+        );
 
-            let mut reader = BufReader::new(file);
-            let mut contents = Vec::new();
-            reader.read_to_end(&mut contents)?;
-
-            format!(
-                "{}Content-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n{}",
-                RESPONSE_200,
-                content_length,
-                String::from_utf8_lossy(&contents)
-            )
-        } else {
-            RESPONSE_404.to_string()
-        }
+        send_response(stream, &response)
     } else {
-        RESPONSE_404.to_string()
-    };
-
-    send_response(stream, &response)
+        send_response(stream, RESPONSE_404)
+    }
 }
 
 fn send_response(stream: &mut TcpStream, response: &str) -> io::Result<()> {
