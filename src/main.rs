@@ -1,7 +1,7 @@
 use std::{
     env,
     fs::File,
-    io::{self, BufRead, Write},
+    io::{self, BufRead, Read, Write},
     net::{TcpListener, TcpStream},
     path::PathBuf,
     thread,
