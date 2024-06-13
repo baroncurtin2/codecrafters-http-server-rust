@@ -1,7 +1,7 @@
 use std::{
     env,
     fs::File,
-    io::{self, BufRead, Read, Write},
+    io::{self, BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
     path::PathBuf,
     thread,
@@ -122,12 +122,13 @@ fn handle_get_request(
                     stream.write_all(&buffer[..bytes_read])?;
                 }
             }
-            Err(_) => {
+            Err(e) => {
+                eprintln!("Error opening file: {}".e);
                 send_response(stream, RESPONSE_404)?;
             }
         }
     } else {
-        send_response(stream, RESPONSE_404)?;
+        send_response(stream, RESPONSE_200)?;
     }
 
     Ok(())
