@@ -15,17 +15,15 @@ const CONTENT_TYPE_OCTET_STREAM: &str = "Content-Type: application/octet-stream\
 struct HttpRequest {
     method: String,
     path: String,
-    version: String,
     host: Option<String>,
     user_agent: Option<String>,
 }
 
 impl HttpRequest {
-    fn new(method: String, path: String, version: String) -> Self {
+    fn new(method: String, path: String) -> Self {
         HttpRequest {
             method,
             path,
-            version,
             host: None,
             user_agent: None,
         }
@@ -88,7 +86,6 @@ fn parse_request(request: &str) -> io::Result<HttpRequest> {
     let mut parts = first_line.split_whitespace();
     let method = parts.next().unwrap_or_default().to_string();
     let path = parts.next().unwrap_or_default().to_string();
-    let version = parts.next().unwrap_or_default().to_string();
 
     let (host, user_agent) = lines.fold((None, None), |acc, line| {
         if line.starts_with("Host: ") {
@@ -103,7 +100,7 @@ fn parse_request(request: &str) -> io::Result<HttpRequest> {
         }
     });
 
-    Ok(HttpRequest::new(method, path, version)
+    Ok(HttpRequest::new(method, path)
         .with_host(host.unwrap_or_default())
         .with_user_agent(user_agent.unwrap_or_default()))
 }
