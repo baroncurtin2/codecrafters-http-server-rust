@@ -117,9 +117,11 @@ fn handle_get_request(stream: &mut TcpStream, path: &str) -> io::Result<()> {
             reader.read_to_end(&mut contents)?;
 
             format!(
-                "{}Content-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
-                RESPONSE_200, content_length
-            ) + &String::from_utf8_lossy(&contents)
+                "{}Content-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n{}",
+                RESPONSE_200,
+                content_length,
+                String::from_utf8_lossy(&contents)
+            )
         } else {
             RESPONSE_404.to_string()
         }
