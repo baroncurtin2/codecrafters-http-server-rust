@@ -49,12 +49,12 @@ fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
     reader.read_to_string(&mut headers)?;
 
     match method {
-        "GET" => handle_get_request(&mut stream, path),
+        "GET" => handle_get_request(&mut stream, path, &headers),
         _ => send_response(&mut stream, "HTTP/1.1 405 Method Not Allowed\r\n\r\n"),
     }
 }
 
-fn handle_get_request(stream: &mut TcpStream, path: &str) -> io::Result<()> {
+fn handle_get_request(stream: &mut TcpStream, path: &str, headers: &str) -> io::Result<()> {
     if path.starts_with("/echo/") {
         handle_echo_request(stream, &path[6..])
     } else if path == "/" {
