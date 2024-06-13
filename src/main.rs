@@ -83,12 +83,12 @@ fn handle_connection(mut stream: TcpStream) -> io::Result<()> {
     }
 
     match method {
-        "GET" => handle_get_request(&mut stream, path, &headers),
+        "GET" => handle_get_request(&mut stream, path),
         _ => send_response(&mut stream, RESPONSE_405),
     }
 }
 
-fn handle_get_request(stream: &mut TcpStream, path: &str, headers: &str) -> io::Result<()> {
+fn handle_get_request(stream: &mut TcpStream, path: &str) -> io::Result<()> {
     let files_directory = unsafe {
         match &FILES_DIRECTORY {
             Some(dir) => dir.clone(),
@@ -113,13 +113,13 @@ fn handle_get_request(stream: &mut TcpStream, path: &str, headers: &str) -> io::
             let content_length = metadata.len();
 
             let mut reader = BufReader::new(file);
-            let mut contents = String::new();
-            reader.read_to_string(&mut contents)?;
+            let mut contents = Vec::new();
+            reader.read_to_end(&mut contents)?;
 
             format!(
-                "{}Content-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n{}",
-                RESPONSE_200, content_length, contents
-            )
+                "{}Content-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+                RESPONSE_200, content_length
+            ) + &String::from_utf8_lossy(&contents)
         } else {
             RESPONSE_404.to_string()
         }
@@ -127,32 +127,6 @@ fn handle_get_request(stream: &mut TcpStream, path: &str, headers: &str) -> io::
         RESPONSE_404.to_string()
     };
 
-    send_response(stream, &response)
-}
-
-fn handle_echo_request(stream: &mut TcpStream, echo_string: &str) -> io::Result<()> {
-    let response_body = echo_string;
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
-        response_body.len(),
-        response_body
-    );
-    send_response(stream, &response)
-}
-
-fn handle_user_agent_request(stream: &mut TcpStream, headers: &str) -> io::Result<()> {
-    // Extract the User-Agent header
-    let user_agent = headers
-        .lines()
-        .find(|line| line.to_lowercase().starts_with("user-agent:"))
-        .and_then(|line| line.splitn(2, ": ").nth(1))
-        .unwrap_or_default();
-
-    let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\n{}",
-        user_agent.len(),
-        user_agent
-    );
     send_response(stream, &response)
 }
 
