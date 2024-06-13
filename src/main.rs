@@ -3,9 +3,7 @@ use std::{
     fs::File,
     io::{self, BufRead, BufReader, Read, Write},
     net::{TcpListener, TcpStream},
-    path::{Path, PathBuf},
-    sync::mpsc,
-    thread,
+    path::Path,
 };
 
 const CRLF: &str = "\r\n";
@@ -55,7 +53,7 @@ fn main() -> io::Result<()> {
     Ok(())
 }
 
-fn handle_connection(mut stream: TcpStream, file_directory: &str) -> io::Result<()> {
+fn handle_connection(stream: TcpStream, file_directory: &str) -> io::Result<()> {
     // Read the request
     let mut reader = BufReader::new(&stream);
     let mut request_line = String::new();
@@ -81,14 +79,14 @@ fn handle_connection(mut stream: TcpStream, file_directory: &str) -> io::Result<
     }
 
     match method {
-        "GET" => handle_get_request(&mut stream, path, file_directory, &headers),
-        "POST" => handle_post_request(&mut stream, path, file_directory, &headers, &mut reader),
-        _ => send_response(&mut stream, HTTP_STATUS_NOT_FOUND, &HashMap::new(), ""),
+        "GET" => handle_get_request(stream, path, file_directory, &headers),
+        "POST" => handle_post_request(stream, path, file_directory, &headers, reader),
+        _ => send_response(stream, HTTP_STATUS_NOT_FOUND, &HashMap::new(), ""),
     }
 }
 
 fn handle_get_request(
-    stream: &mut TcpStream,
+    stream: TcpStream,
     path: &str,
     file_directory: &str,
     headers: &HashMap<String, String>,
@@ -109,7 +107,7 @@ fn handle_get_request(
 }
 
 fn handle_echo_request(
-    stream: &mut TcpStream,
+    stream: TcpStream,
     echo_string: &str,
     headers: &HashMap<String, String>,
 ) -> io::Result<()> {
@@ -121,7 +119,7 @@ fn handle_echo_request(
 }
 
 fn handle_user_agent_request(
-    stream: &mut TcpStream,
+    stream: TcpStream,
     headers: &HashMap<String, String>,
 ) -> io::Result<()> {
     let user_agent = headers
@@ -135,11 +133,7 @@ fn handle_user_agent_request(
     send_response(stream, HTTP_STATUS_OK, &headers, &user_agent)
 }
 
-fn handle_file_request(
-    stream: &mut TcpStream,
-    file_directory: &str,
-    filename: &str,
-) -> io::Result<()> {
+fn handle_file_request(stream: TcpStream, file_directory: &str, filename: &str) -> io::Result<()> {
     let file_path = Path::new(file_directory).join(filename);
     match File::open(&file_path) {
         Ok(mut file) => {
@@ -162,11 +156,11 @@ fn handle_file_request(
 }
 
 fn handle_post_request(
-    stream: &mut TcpStream,
+    mut stream: TcpStream,
     path: &str,
     file_directory: &str,
     headers: &HashMap<String, String>,
-    reader: &mut BufReader<&TcpStream>,
+    reader: BufReader<&TcpStream>,
 ) -> io::Result<()> {
     let content_length = headers
         .get(CONTENT_LENGTH_HEADER)
@@ -174,14 +168,14 @@ fn handle_post_request(
         .parse::<usize>()
         .unwrap_or(0);
     let mut body = vec![0; content_length];
-    reader.read_exact(&mut body)?;
+    reader.take(content_length as u64).read_exact(&mut body)?;
 
     let file_path = Path::new(file_directory).join(path.trim_start_matches("/"));
     let mut file = File::create(&file_path)?;
 
     file.write_all(&body)?;
 
-    send_response(stream, HTTP_STATUS_CREATED, &HashMap::new(), "")
+    send_response(&mut stream, HTTP_STATUS_CREATED, &HashMap::new(), "")
 }
 
 fn create_headers(
