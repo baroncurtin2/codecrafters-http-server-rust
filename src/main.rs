@@ -1,12 +1,13 @@
-use itertools::Itertools;
 use std::{
     env,
-    fs::File,
+    fs::{self, File},
     io::{BufRead, BufReader, Read, Write},
     net::TcpListener,
     path::Path,
     thread,
 };
+
+use itertools::Itertools;
 
 fn handle_client(mut stream: std::net::TcpStream) {
     println!("accepted new connection");
@@ -44,23 +45,78 @@ fn handle_client(mut stream: std::net::TcpStream) {
                     }
                 }
             }
-            ["files", f] => {
-                if let Some(dir) = env::args().nth(2) {
-                    if let Ok(mut file) = File::open(Path::new(&dir).join(f)) {
-                        let mut buf = Vec::new();
-                        if let Err(e) = file.read_to_end(&mut buf) {
-                            eprintln!("Error reading file: {}", e);
+            ["files", filename] => {
+                if req.starts_with("POST") {
+                    // Handle POST request to create a new file
+                    let mut content_length = 0;
+                    let mut lines = reader.lines();
+                    while let Some(Ok(line)) = lines.next() {
+                        if line.starts_with("Content-Length: ") {
+                            if let Ok(len) =
+                                line.trim_start_matches("Content-Length: ").parse::<usize>()
+                            {
+                                content_length = len;
+                            }
+                        }
+                        if line == "\r\n" {
+                            break;
+                        }
+                    }
+                    let mut body = vec![0; content_length];
+                    if let Err(e) = reader.read_exact(&mut body) {
+                        eprintln!("Error reading request body: {}", e);
+                        return;
+                    }
+
+                    // Create or overwrite the file with the received content
+                    if let Some(dir) = env::args().nth(2) {
+                        let file_path = Path::new(&dir).join(filename);
+                        if let Err(e) = fs::write(&file_path, &body) {
+                            eprintln!("Error writing to file: {}", e);
                             return;
                         }
-                        let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n", buf.len());
+                        let response = format!("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\n\r\nFile created successfully\n", body.len());
                         if let Err(e) = stream.write_all(response.as_bytes()) {
                             eprintln!("Error writing response: {}", e);
                         }
-                        if let Err(e) = stream.write_all(&buf) {
-                            eprintln!("Error writing file data: {}", e);
+                    } else {
+                        if let Err(e) =
+                            stream.write_all(b"HTTP/1.1 500 Internal Server Error\r\n\r\n")
+                        {
+                            eprintln!("Error writing response: {}", e);
+                        }
+                    }
+                } else {
+                    // Handle GET request to serve existing file
+                    if let Some(dir) = env::args().nth(2) {
+                        let file_path = Path::new(&dir).join(filename);
+                        if let Ok(mut file) = File::open(&file_path) {
+                            let mut buf = Vec::new();
+                            if let Err(e) = file.read_to_end(&mut buf) {
+                                eprintln!("Error reading file: {}", e);
+                                if let Err(e) =
+                                    stream.write_all(b"HTTP/1.1 500 Internal Server Error\r\n\r\n")
+                                {
+                                    eprintln!("Error writing response: {}", e);
+                                }
+                                return;
+                            }
+                            let response = format!("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n", buf.len());
+                            if let Err(e) = stream.write_all(response.as_bytes()) {
+                                eprintln!("Error writing response: {}", e);
+                            }
+                            if let Err(e) = stream.write_all(&buf) {
+                                eprintln!("Error writing file data: {}", e);
+                            }
+                        } else {
+                            if let Err(e) = stream.write_all(b"HTTP/1.1 404 Not Found\r\n\r\n") {
+                                eprintln!("Error writing response: {}", e);
+                            }
                         }
                     } else {
-                        if let Err(e) = stream.write_all(b"HTTP/1.1 404 Not Found\r\n\r\n") {
+                        if let Err(e) =
+                            stream.write_all(b"HTTP/1.1 500 Internal Server Error\r\n\r\n")
+                        {
                             eprintln!("Error writing response: {}", e);
                         }
                     }
